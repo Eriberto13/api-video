@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import yt_dlp
+import requests
 import os
 
 app = Flask(__name__)
@@ -14,38 +15,54 @@ def extrair():
     if not url:
         return jsonify({"erro": "URL nao fornecida"}), 400
 
-    # Limpa parâmetros extras da URL se houver
-    if '?' in url:
-        url = url.split('?')[0]
-
+    # Método 1: Tentativa direta com yt-dlp atualizado
     ydl_opts = {
-        'format': 'best[ext=mp4]/best',
+        'format': 'best',
         'quiet': True,
         'no_warnings': True,
-        # Simula um navegador real para o YouTube não bloquear o servidor
+        'nocheckcertificate': True,
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         }
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            
-            # Pega a URL do vídeo extraído
             download_url = info.get('url')
             
-            # Caso a estrutura do JSON venha encadeada em formatos
-            if not download_url and 'requested_formats' in info:
-                download_url = info['requested_formats'][0].get('url')
-
-            return jsonify({
-                "titulo": info.get('title', 'Video'),
-                "download_url": download_url
-            })
+            if download_url:
+                return jsonify({
+                    "titulo": info.get('title', 'Video'),
+                    "download_url": download_url
+                })
     except Exception as e:
-        return jsonify({"erro": str(e)}), 500
+        print(f"Erro yt-dlp: {e}")
+
+    # Método 2: Fallback usando API espelho (Invidious) caso o Render esteja bloqueado
+    try:
+        video_id = ""
+        if "youtu.be/" in url:
+            video_id = url.split("youtu.be/")[1].split("?")[0]
+        elif "watch?v=" in url:
+            video_id = url.split("watch?v=")[1].split("&")[0]
+
+        if video_id:
+            inv_res = requests.get(f"https://inv.nadeko.net/api/v1/videos/{video_id}", timeout=10)
+            if inv_res.status_code == 200:
+                data = inv_res.json()
+                formatos = data.get('formatStreams', [])
+                if formatos:
+                    # Pega o formato de maior qualidade disponível com vídeo/áudio combinados
+                    melhor_formato = formatos[-1]
+                    return jsonify({
+                        "titulo": data.get('title', 'Video'),
+                        "download_url": melhor_formato.get('url')
+                    })
+    except Exception as e:
+        print(f"Erro Invidious Fallback: {e}")
+
+    return jsonify({"erro": "Nao foi possivel extrair o video do YouTube no momento"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
